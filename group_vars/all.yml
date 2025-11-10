@@ -1,0 +1,9 @@
+# --- App settings ---
+app_dir: /var/www/laravel
+server_name: "_"          # اگر دامنه داری اینجا بگذار: example.com
+db_name: laravel
+db_user: laravel
+db_pass: "ChangeMeNow_!23"  # حتما عوضش کن
+
+# PHP از PPA او‌ندرژ نصب شود
+use_ondrej_php_ppa: true
