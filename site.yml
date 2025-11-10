@@ -1,0 +1,288 @@
+---
+- name: Provision Ubuntu for Laravel (Nginx + PHP-FPM latest + MySQL)
+  hosts: all
+  become: true
+  vars:
+    # --- تنظیمات اپ ---
+    app_dir: /var/www/laravel
+    server_name: _
+    db_name: laravel
+    db_user: laravel
+    db_pass: "StrongPass123!"       # حتما تغییر بده
+
+    # --- نسخه‌ها/منابع ---
+    use_ondrej_php_ppa: true
+
+  pre_tasks:
+    - name: Ensure non-interactive apt
+      ansible.builtin.shell: 'echo "APT::Get::Assume-Yes \"true\";" > /etc/apt/apt.conf.d/90assumeyes'
+      args: { creates: /etc/apt/apt.conf.d/90assumeyes }
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - software-properties-common
+          - ca-certificates
+          - git
+          - unzip
+          - curl
+        state: present
+
+    - name: Add Ondrej PHP PPA (latest PHP)
+      ansible.builtin.apt_repository:
+        repo: ppa:ondrej/php
+        state: present
+      when: use_ondrej_php_ppa
+
+    - name: Apt update after PPA
+      ansible.builtin.apt:
+        update_cache: true
+      when: use_ondrej_php_ppa
+
+  tasks:
+    # --- نصب Nginx و MySQL ---
+    - name: Install Nginx and MySQL server
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - mysql-server
+        state: present
+
+    - name: Ensure MySQL is running
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+
+    # برای ماژول‌های community.mysql نیاز به PyMySQL روی تارگت داریم
+    - name: Install Python MySQL driver (PyMySQL) on target
+      ansible.builtin.apt:
+        name: python3-pymysql
+        state: present
+
+    # --- نصب PHP-FPM و اکستنشن‌ها ---
+    - name: Install PHP-FPM and common extensions
+      ansible.builtin.apt:
+        name:
+          - php-fpm
+          - php-cli
+          - php-common
+          - php-mbstring
+          - php-xml
+          - php-curl
+          - php-mysql
+          - php-zip
+          - php-bcmath
+          - php-intl
+          - php-gd
+        state: present
+
+    - name: Detect PHP minor version (e.g., 8.3)
+      ansible.builtin.command: php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;'
+      register: php_minor
+      changed_when: false
+
+    - name: Set PHP FPM socket fact
+      ansible.builtin.set_fact:
+        php_fpm_sock: "/run/php/php{{ php_minor.stdout }}-fpm.sock"
+
+    - name: Ensure PHP-FPM is running
+      ansible.builtin.service:
+        name: "php{{ php_minor.stdout }}-fpm"
+        state: started
+        enabled: true
+
+    # --- نصب Composer (آخرین نسخه) ---
+    - name: Download Composer installer
+      ansible.builtin.get_url:
+        url: https://getcomposer.org/installer
+        dest: /tmp/composer-setup.php
+        mode: "0644"
+
+    - name: Install Composer to /usr/local/bin
+      ansible.builtin.command: php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer
+      args:
+        creates: /usr/local/bin/composer
+
+    # --- ساخت اپ لاراول ---
+    - name: Create app parent dir
+      ansible.builtin.file:
+        path: "{{ app_dir | dirname }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Create Laravel project (latest)
+      ansible.builtin.command: >
+        composer create-project laravel/laravel {{ app_dir }}
+      args:
+        creates: "{{ app_dir }}/artisan"
+      environment:
+        COMPOSER_ALLOW_SUPERUSER: "1"
+
+    - name: Set ownership for app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        recurse: true
+
+    - name: Set directory/file permissions
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0775"
+      loop:
+        - "{{ app_dir }}/storage"
+        - "{{ app_dir }}/bootstrap/cache"
+
+    # --- کانفیگ MySQL برای اپ ---
+    - name: Create application database
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    - name: Create database user and grant privileges
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        host: "%"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        check_implicit_admin: true
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    # --- تنظیم .env لاراول ---
+    - name: Check if .env exists
+      ansible.builtin.stat:
+        path: "{{ app_dir }}/.env"
+      register: env_stat
+
+    - name: Ensure .env exists
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        content: |
+          APP_NAME=Laravel
+          APP_ENV=production
+          APP_KEY=
+          APP_DEBUG=false
+          APP_URL=http://{{ server_name }}
+
+          LOG_CHANNEL=stack
+          LOG_DEPRECATIONS_CHANNEL=null
+          LOG_LEVEL=info
+
+          DB_CONNECTION=mysql
+          DB_HOST=127.0.0.1
+          DB_PORT=3306
+          DB_DATABASE={{ db_name }}
+          DB_USERNAME={{ db_user }}
+          DB_PASSWORD={{ db_pass }}
+
+          BROADCAST_DRIVER=log
+          CACHE_DRIVER=file
+          FILESYSTEM_DISK=local
+          QUEUE_CONNECTION=sync
+          SESSION_DRIVER=file
+          SESSION_LIFETIME=120
+        owner: www-data
+        group: www-data
+        mode: "0644"
+      when: not env_stat.stat.exists
+
+    - name: Generate Laravel APP_KEY
+      ansible.builtin.command: php artisan key:generate --force
+      args:
+        chdir: "{{ app_dir }}"
+      register: app_key_gen
+      changed_when: "'Application key set' in app_key_gen.stdout"
+
+    - name: Create storage symlink
+      ansible.builtin.command: php artisan storage:link
+      args:
+        chdir: "{{ app_dir }}"
+      register: storage_link
+      failed_when: false
+      changed_when: "'The [public/storage] directory already exists.' not in storage_link.stdout"
+
+    # --- کانفیگ Nginx برای لاراول ---
+    - name: Write Nginx site config for Laravel
+      ansible.builtin.copy:
+        dest: /etc/nginx/sites-available/laravel.conf
+        mode: "0644"
+        content: |
+          server {
+              listen 80;
+              server_name {{ server_name }};
+              root {{ app_dir }}/public;
+              index index.php index.html;
+              client_max_body_size 20m;
+
+              add_header X-Frame-Options "SAMEORIGIN";
+              add_header X-Content-Type-Options "nosniff";
+
+              location / {
+                  try_files $uri $uri/ /index.php?$query_string;
+              }
+
+              location ~ \.php$ {
+                  include snippets/fastcgi-php.conf;
+                  fastcgi_pass unix:{{ php_fpm_sock }};
+              }
+
+              location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+                  expires max;
+                  log_not_found off;
+              }
+
+              access_log /var/log/nginx/laravel.access.log;
+              error_log  /var/log/nginx/laravel.error.log;
+          }
+      notify: Reload Nginx
+
+    - name: Disable default Nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Reload Nginx
+
+    - name: Enable Laravel site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/laravel.conf
+        dest: /etc/nginx/sites-enabled/laravel.conf
+        state: link
+      notify: Reload Nginx
+
+    - name: Ensure Nginx is started and enabled
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+    # --- (اختیاری) باز کردن فایروال ---
+    - name: Allow Nginx in UFW (optional)
+      ansible.builtin.shell: |
+        if command -v ufw >/dev/null 2>&1; then
+          ufw allow 'Nginx Full' || true
+        fi
+      changed_when: false
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
