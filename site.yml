@@ -3,14 +3,12 @@
   hosts: all
   become: true
   vars:
-    # --- تنظیمات اپ ---
     app_dir: /var/www/laravel
     server_name: _
     db_name: laravel
     db_user: laravel
-    db_pass: "StrongPass123!"       # حتما تغییر بده
+    db_pass: "StrongPass123!"
 
-    # --- نسخه‌ها/منابع ---
     use_ondrej_php_ppa: true
 
   pre_tasks:
@@ -45,7 +43,6 @@
       when: use_ondrej_php_ppa
 
   tasks:
-    # --- نصب Nginx و MySQL ---
     - name: Install Nginx and MySQL server
       ansible.builtin.apt:
         name:
@@ -59,13 +56,11 @@
         state: started
         enabled: true
 
-    # برای ماژول‌های community.mysql نیاز به PyMySQL روی تارگت داریم
     - name: Install Python MySQL driver (PyMySQL) on target
       ansible.builtin.apt:
         name: python3-pymysql
         state: present
 
-    # --- نصب PHP-FPM و اکستنشن‌ها ---
     - name: Install PHP-FPM and common extensions
       ansible.builtin.apt:
         name:
@@ -97,7 +92,6 @@
         state: started
         enabled: true
 
-    # --- نصب Composer (آخرین نسخه) ---
     - name: Download Composer installer
       ansible.builtin.get_url:
         url: https://getcomposer.org/installer
@@ -109,7 +103,6 @@
       args:
         creates: /usr/local/bin/composer
 
-    # --- ساخت اپ لاراول ---
     - name: Create app parent dir
       ansible.builtin.file:
         path: "{{ app_dir | dirname }}"
@@ -145,7 +138,6 @@
         - "{{ app_dir }}/storage"
         - "{{ app_dir }}/bootstrap/cache"
 
-    # --- کانفیگ MySQL برای اپ ---
     - name: Create application database
       community.mysql.mysql_db:
         name: "{{ db_name }}"
@@ -166,7 +158,6 @@
       vars:
         ansible_python_interpreter: /usr/bin/python3
 
-    # --- تنظیم .env لاراول ---
     - name: Check if .env exists
       ansible.builtin.stat:
         path: "{{ app_dir }}/.env"
@@ -219,7 +210,6 @@
       failed_when: false
       changed_when: "'The [public/storage] directory already exists.' not in storage_link.stdout"
 
-    # --- کانفیگ Nginx برای لاراول ---
     - name: Write Nginx site config for Laravel
       ansible.builtin.copy:
         dest: /etc/nginx/sites-available/laravel.conf
@@ -273,7 +263,6 @@
         state: started
         enabled: true
 
-    # --- (اختیاری) باز کردن فایروال ---
     - name: Allow Nginx in UFW (optional)
       ansible.builtin.shell: |
         if command -v ufw >/dev/null 2>&1; then
